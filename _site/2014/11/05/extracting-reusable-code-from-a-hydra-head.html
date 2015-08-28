@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset='utf-8'>
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <meta name="description" content="dchandekstark.github.io : Sweating the Details">
+
+    <link rel="stylesheet" type="text/css" media="screen" href="/stylesheets/stylesheet.css">
+    <link rel="stylesheet" type="text/css" media="screen" href="/stylesheets/syntax.css">
+
+    <title>dchandekstark.github.io</title>
+  </head>
+
+  <body>
+
+    <!-- HEADER -->
+    <div id="header_wrap" class="outer">
+        <header class="inner">
+          <a id="forkme_banner" href="https://github.com/dchandekstark">View on GitHub</a>
+
+          <h1 id="project_title"><a href="/">dchandekstark.github.io</a></h1>
+          <h2 id="project_tagline">Sweating the Details</h2>
+
+        </header>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <div id="main_content_wrap" class="outer">
+      <section id="main_content" class="inner">
+	<h2>Extracting reuseable code from a Hydra head</h2>
+
+<p style="font-style: italic">
+  <span style="float: right">David Chandek-Stark</span>
+  <span>05 Nov 2014</span>
+</p>
+
+<p>When we started building a repository application with the <a href="http://projecthydra.org">Hydra</a> framework nigh about two years ago, nearly everything about the code environment was new to us – including Ruby, Rails, RSpec and Git.  While we had a respectable level of repository domain knowledge (by no means experts), we tended to follow coding and testing patterns we observed within the Hydra development community.</p>
+
+<p>I think we got the conceptual modeling mostly right.  We stuck to models that seemed to satisfy our initial use cases and hoped that they would give us a good framework to refine as we rolled out the repository to a broader audience.  With one significant exception, <a href="https://github.com/duke-libraries/ddr-models/wiki/Repository-Models-1.0">this wiki page</a> describes our models and the relations between them.  Originally we had a separate AdminPolicy object which implemented the Hydra admin policy behavior; however, because we observed in practice that we had one AdminPolicy object per Collection, we decided to migrate the admin policy functionality to the Collection model.  (In the long term, we are developing a role-based access control approach, but that is another story …)</p>
+
+<p>In recent months we have begun planning for at least two additional Hydra heads.  This step caused us to embark on a refactoring of our original Hydra head, extracting the repository models into a separate project which we could reuse as a gem.  In general, this process has gone reasonably well – meaning we’re getting through it – but we were rather naive about how complicated it would be.  A better knowledge of Rails, gems, and refactoring in general would have helped, not to mention more code analysis and planning before diving in.  A few specific issues deserve mention:</p>
+
+<h3 id="namespaces-or-not">Namespaces (or not)</h3>
+
+<p>Following the typical Rails app development pattern, we originally put our repository models in <code>app/models</code>, not namespaced.  This created two issues:</p>
+
+<ul>
+  <li>
+    <p>We couldn’t namespace the models on refactoring (e.g., from <code>Component</code> to <code>Ddr::Models::Component</code>) without touching every object in the repository, which we didn’t want to do.</p>
+  </li>
+  <li>
+    <p>We learned that <code>app/models</code> is not a magic path in a Rails engine (more on engines later), which affects Rails autoloading, etc., so we explicitly required each module:</p>
+  </li>
+</ul>
+
+<div class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="no">Dir</span><span class="o">[</span><span class="no">Ddr</span><span class="o">::</span><span class="no">Models</span><span class="o">::</span><span class="no">Engine</span><span class="o">.</span><span class="n">root</span><span class="o">.</span><span class="n">to_s</span> <span class="o">+</span> <span class="s2">&quot;/app/models/*.rb&quot;</span><span class="o">].</span><span class="n">each</span> <span class="p">{</span> <span class="o">|</span><span class="n">m</span><span class="o">|</span> <span class="nb">require</span> <span class="n">m</span> <span class="p">}</span></code></pre></div>
+
+<p>(We also added <code>app/models</code> to the gemspec <code>require_paths</code>, but I don’t think that’s necessary.)</p>
+
+<h3 id="hydra-rightsmetadata-dependency">Hydra rightsMetadata dependency</h3>
+
+<p>If you have a true Hydra model, then you have rightsMetadata, which you get from <code>Hydra::AccessControls::Permissions</code>.  Unfortunately, this module (as of this writing) is not on a path available to the engine (b/c it depends on a Rails app?).  Here’s the hack we came up with:</p>
+
+<div class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="c1"># Awful hack to make Hydra::AccessControls::Permissions accessible</span>
+<span class="vg">$:</span> <span class="o">&lt;&lt;</span> <span class="no">Gem</span><span class="o">.</span><span class="n">loaded_specs</span><span class="o">[</span><span class="s1">&#39;hydra-access-controls&#39;</span><span class="o">].</span><span class="n">full_gem_path</span> <span class="o">+</span> <span class="s2">&quot;/app/models/concerns&quot;</span></code></pre></div>
+
+<h3 id="fedora--solr--jetty">Fedora / Solr / Jetty</h3>
+
+<p>Testing repository models requires a Java servlet container for Fedora and Solr, for which most folks use Jetty.  To integrate Jetty into the engine it’s convenient to use jettywrapper, which provides hydra-jetty and a number of useful rake tasks (jetty:start, jetty:stop, etc.).  An undocumented (or poorly documented) feature of jettywrapper is that it will use a constant <code>JETTY_CONFIG</code> for its default configuration, so the relevant parts of the Rakefile look like this:</p>
+
+<div class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="no">ENGINE_ROOT</span> <span class="o">=</span> <span class="no">File</span><span class="o">.</span><span class="n">dirname</span><span class="p">(</span><span class="bp">__FILE__</span><span class="p">)</span>
+
+<span class="no">JETTY_CONFIG</span> <span class="o">=</span> <span class="p">{</span> 
+  <span class="ss">jetty_home</span><span class="p">:</span> <span class="no">File</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="no">ENGINE_ROOT</span><span class="p">,</span> <span class="s2">&quot;jetty&quot;</span><span class="p">),</span>
+  <span class="ss">jetty_port</span><span class="p">:</span> <span class="mi">8983</span><span class="p">,</span>
+  <span class="ss">startup_wait</span><span class="p">:</span> <span class="mi">45</span><span class="p">,</span>
+  <span class="ss">quiet</span><span class="p">:</span> <span class="kp">true</span><span class="p">,</span>
+  <span class="ss">java_opts</span><span class="p">:</span> <span class="o">[</span><span class="s2">&quot;-Xmx256m&quot;</span><span class="p">,</span> <span class="s2">&quot;-XX:MaxPermSize=128m&quot;</span><span class="o">]</span>
+<span class="p">}</span>
+
+<span class="nb">require</span> <span class="s1">&#39;jettywrapper&#39;</span>
+
+<span class="no">Jettywrapper</span><span class="o">.</span><span class="n">instance</span><span class="o">.</span><span class="n">base_path</span> <span class="o">=</span> <span class="no">ENGINE_ROOT</span>
+
+<span class="n">desc</span> <span class="s2">&quot;Run the CI build&quot;</span>
+<span class="n">task</span> <span class="ss">:ci</span> <span class="o">=&gt;</span> <span class="o">[</span><span class="s2">&quot;jetty:clean&quot;</span><span class="o">]</span> <span class="k">do</span>
+  <span class="no">Jettywrapper</span><span class="o">.</span><span class="n">wrap</span><span class="p">(</span><span class="no">JETTY_CONFIG</span><span class="p">)</span> <span class="k">do</span>
+    <span class="no">Rake</span><span class="o">::</span><span class="no">Task</span><span class="o">[</span><span class="s1">&#39;spec&#39;</span><span class="o">].</span><span class="n">invoke</span>
+  <span class="k">end</span>
+<span class="k">end</span></code></pre></div>
+
+<h3 id="custom-predicates">Custom Predicates</h3>
+
+<p>ActiveFedora provides that custom predicates for RELS-EXT relations (FC3) can be added to a file at <code>config/predicate_mappings.yml</code>.  Unfortunately, this file apparently must be read when <code>ActiveFedora::Predicates</code> first loads or it has no effect.  Fortunately, you can use <code>ActiveFedora::Predicates.set_predicates(mapping)</code> to add predicates later.  So, back in the Rails engine module, we created an initializer:</p>
+
+<div class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="n">initializer</span> <span class="s1">&#39;ddr_models.predicates&#39;</span> <span class="k">do</span>
+  <span class="no">ActiveFedora</span><span class="o">::</span><span class="no">Predicates</span><span class="o">.</span><span class="n">set_predicates</span><span class="p">(</span><span class="no">Ddr</span><span class="o">::</span><span class="no">Metadata</span><span class="o">::</span><span class="no">PREDICATES</span><span class="p">)</span>
+<span class="k">end</span></code></pre></div>
+
+<p>where our predicates are defined:</p>
+
+<div class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">module</span> <span class="nn">Ddr</span>
+  <span class="k">module</span> <span class="nn">Metadata</span>
+    <span class="no">PREDICATES</span> <span class="o">=</span> <span class="p">{</span>
+      <span class="s2">&quot;http://projecthydra.org/ns/relations#&quot;</span> <span class="o">=&gt;</span> <span class="p">{</span>
+        <span class="ss">is_attached_to</span><span class="p">:</span> <span class="s2">&quot;isAttachedTo&quot;</span>
+      <span class="p">},</span>
+      <span class="s2">&quot;http://www.loc.gov/mix/v20/externalTarget#&quot;</span> <span class="o">=&gt;</span> <span class="p">{</span>
+        <span class="ss">is_external_target_for</span><span class="p">:</span> <span class="s2">&quot;isExternalTargetFor&quot;</span><span class="p">,</span>
+        <span class="ss">has_external_target</span><span class="p">:</span> <span class="s2">&quot;hasExternalTarget&quot;</span>
+      <span class="p">}</span>
+    <span class="p">}</span>
+  <span class="k">end</span>
+<span class="k">end</span></code></pre></div>
+
+<h3 id="database-migrations">Database migrations</h3>
+
+<p>Our repository models have a dependency on an ActiveRecord model that we use for event tracking, so we had to move that model into the gem as well.  In order to test everything, we needed a db with migrations.  While it appears to be technically possible to create something less than a full Rails engine that can deal with database connectivity and migrations (see <a href="http://ndlib.github.io/practices/composing-a-rails-plugin-for-hydra/">Jeremy Friesen’s article</a>), it’s also true that a Rails engine with an internal test app makes this easy (mainly because of the <a href="https://github.com/rails/rails/blob/master/railties/lib/rails/tasks/engine.rake">Rails engine rakefile</a>).  In the long run it would be nice to dynamically generate the test app (say, with engine_cart), but the static test app generated by Rails got us up and running fast.</p>
+
+<p>Of course, since our original app already had the schema and database table for our Event model, we had to be a little more careful in defining the migration to only create the table if it does not exist:</p>
+
+<div class="highlight"><pre><code class="language-ruby" data-lang="ruby"><span class="k">class</span> <span class="nc">CreateEvents</span> <span class="o">&lt;</span> <span class="no">ActiveRecord</span><span class="o">::</span><span class="no">Migration</span>
+  <span class="k">def</span> <span class="nf">up</span>
+    <span class="k">unless</span> <span class="n">table_exists?</span><span class="p">(</span><span class="s2">&quot;events&quot;</span><span class="p">)</span>
+      <span class="c1"># table definition and indexes copied from original app schema</span>
+      <span class="n">create_table</span> <span class="s2">&quot;events&quot;</span> <span class="k">do</span> <span class="o">|</span><span class="n">t</span><span class="o">|</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">datetime</span> <span class="s2">&quot;event_date_time&quot;</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">integer</span>  <span class="s2">&quot;user_id&quot;</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">string</span>   <span class="s2">&quot;type&quot;</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">string</span>   <span class="s2">&quot;pid&quot;</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">string</span>   <span class="s2">&quot;software&quot;</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">text</span>     <span class="s2">&quot;comment&quot;</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">datetime</span> <span class="s2">&quot;created_at&quot;</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">datetime</span> <span class="s2">&quot;updated_at&quot;</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">string</span>   <span class="s2">&quot;summary&quot;</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">string</span>   <span class="s2">&quot;outcome&quot;</span>
+        <span class="n">t</span><span class="o">.</span><span class="n">text</span>     <span class="s2">&quot;detail&quot;</span>
+      <span class="k">end</span>
+
+      <span class="n">add_index</span> <span class="s2">&quot;events&quot;</span><span class="p">,</span> <span class="o">[</span><span class="s2">&quot;event_date_time&quot;</span><span class="o">]</span><span class="p">,</span> <span class="nb">name</span><span class="p">:</span> <span class="s2">&quot;index_events_on_event_date_time&quot;</span>
+      <span class="n">add_index</span> <span class="s2">&quot;events&quot;</span><span class="p">,</span> <span class="o">[</span><span class="s2">&quot;outcome&quot;</span><span class="o">]</span><span class="p">,</span> <span class="nb">name</span><span class="p">:</span> <span class="s2">&quot;index_events_on_outcome&quot;</span>
+      <span class="n">add_index</span> <span class="s2">&quot;events&quot;</span><span class="p">,</span> <span class="o">[</span><span class="s2">&quot;pid&quot;</span><span class="o">]</span><span class="p">,</span> <span class="nb">name</span><span class="p">:</span> <span class="s2">&quot;index_events_on_pid&quot;</span>
+      <span class="n">add_index</span> <span class="s2">&quot;events&quot;</span><span class="p">,</span> <span class="o">[</span><span class="s2">&quot;type&quot;</span><span class="o">]</span><span class="p">,</span> <span class="nb">name</span><span class="p">:</span> <span class="s2">&quot;index_events_on_type&quot;</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="nf">down</span>
+    <span class="k">raise</span> <span class="no">ActiveRecord</span><span class="o">::</span><span class="no">IrreversibleMigration</span>
+  <span class="k">end</span>
+<span class="k">end</span></code></pre></div>
+
+<h2 id="lessons-learned">Lessons Learned</h2>
+
+<p>Of course, some things only come with experience … but here some observations.</p>
+
+<ul>
+  <li>
+    <p>If you think there’s a chance you will build more than one hydra head, consider modularizing and namespacing your code from the start.  I suspect that it’s much easier to connect pieces than to disentangle them.  You’ll also get practice with gems and Rails engines.</p>
+  </li>
+  <li>
+    <p>Refactoring is a discipline (and I’m not very good at it).  I tried to keep <a href="http://refactoring.com/">Martin Fowler’s definition</a> in mind, but it’s hard to resist all the temptations to “fix stuff” at the same time that you’re reorganizing.</p>
+  </li>
+  <li>
+    <p>Good quality tests are critical when making extensive organizational changes.  I’m still learning how to write good ones and avoid bad and unnecessary tests.</p>
+  </li>
+  <li>
+    <p>Unless you’ve got way more git-fu that I, you may want to freeze development on (or at least the relevant parts of) the original app while you’re extracting code.  I didn’t want to think about how I was going to deal with merge conflicts and applying patches across projects.</p>
+  </li>
+</ul>
+
+
+<div id="disqus_thread"></div>
+<script type="text/javascript">
+  /* * * CONFIGURATION VARIABLES * * */
+  var disqus_shortname = 'dchandekstarkgithubio';
+
+  /* * * DON'T EDIT BELOW THIS LINE * * */
+  (function() {
+  var dsq = document.createElement('script'); dsq.type = 'text/javascript'; dsq.async = true;
+  dsq.src = '//' + disqus_shortname + '.disqus.com/embed.js';
+  (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
+  })();
+</script>
+<noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript" rel="nofollow">comments powered by Disqus.</a></noscript>
+
+
+      </section>
+    </div>
+
+    <!-- FOOTER  -->
+    <div id="footer_wrap" class="outer">
+      <footer class="inner">
+        <p>Published with <a href="https://pages.github.com">GitHub Pages</a></p>
+      </footer>
+    </div>
+
+  </body>
+</html>

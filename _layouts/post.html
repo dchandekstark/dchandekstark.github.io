@@ -1,0 +1,14 @@
+---
+layout: default
+---
+
+<h2>{{ page.title }}</h2>
+
+<p style="font-style: italic">
+  <span style="float: right">{{ page.author }}</span>
+  <span>{{ page.date | date_to_string }}</span>
+</p>
+
+{{ content }}
+
+{% include disqus.html %}
